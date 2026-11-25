@@ -35,3 +35,20 @@ with open_station('station.sqlite3') as station:
 - `find_report_id(batch)` 返回原成果号或 `None`。`claim(report_id)` 返回固定成果并在未知原号时抛出 `UnknownReport`。`export_report(report_id)` 记录一次成功导出并返回 CSV。首条记录包含成果、批号、量纲、合计和首执，随后的 `reading` 记录按清单顺序列出原据。读值、行位和合计在 CSV 中使用十进制整数。
 
 同一原包中，各成员的实收与保管凭据一起提交。任何成员缺据时设备保留原包。最后一条证据落地后，站端提交确认待办才请求回收。按包的设备确认和按批的签发各自可以续办。实收按批号和行位唯一，原值或出处冲突保留原实收。清单外的合法晚到行可继续入账，已签批账按原号读取原快照。两个库分别初始化，重复打开保留已有状态，站端可在设备关闭时核账、签发及领取。
+
+## 双包合装
+
+`recorder` 支持合装模式，细节契约见 [COMPACTION.md](COMPACTION.md)。新建设备库时显式开启，重开可省略设置沿用原配置；普通模式的原入口和行为不变。
+
+```python
+with open_recorder('device.sqlite3', station.catalog, capacity=2, compaction=True) as device:
+    ...
+    outcome = station.compact(device, 'op:PQ', 'P', 'Q')  # compacted / ineligible / pending
+```
+
+- `open_recorder(path, catalog, capacity=2, compaction=True)` 开启合装模式，每槽最多两条原读。重开时省略 `capacity`、`compaction` 即沿用已固定的设置；显式传入不同值抛出 `ValueError`。合装模式下录制超过两条原读的包抛出 `ValueError`。
+- `station.compact(device, operation_id, left_id, right_id)` 只依据站端已经持久化、可对回原行的实收记录构造 `(原包号, 原物理位, 成员摘要)` 凭据，再经 `device.compact_packets(...)` 送给设备。设备逐项核对原包号、物理位与 `recorder.packet.member_digest` 摘要，全部相符才把两条已交副本移出并让两条待交原读合占一槽；错证返回固定的 `ineligible`，事务失败保留原件和槽位。
+- 合装失答时站端返回 `pending`。用原操作号和原有序包对重开查询即领回原终局；同号改换有序包对抛出 `ValueError`。
+- 合装后的取件为只含待交成员的 v2 子集编码，`read_packet` 仍按原号调用；合装前发出的完整 v1 回复（如 `DelayedRead`）继续按原编码核验。两类回复指向同一组原成员，按原成员去重，错绑或摘要不合的成员没有实收资格。
+- 按原包分别实收与确认：P 的确认不清掉 Q 的待交原读，也不改变 Q 的确认资格。闭录、签发、领取入口不变。
+- `python3 -B compaction_fixture.py check-v1` 保留普通模式两槽满载对照；`python3 -B compaction_fixture.py demo` 跑通合装、失答续办、独立确认并演示停源后按成果号领取。

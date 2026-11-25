@@ -52,14 +52,31 @@ class CustodyStore:
             )
         ''')
 
-    def open_packet(self, packet: Packet) -> PacketProgress:
-        digest = hashlib.sha256(encode_packet(packet)).hexdigest()
+    def open_packet(self, packet: Packet, *, complete: bool = True) -> PacketProgress:
+        if complete:
+            digest = hashlib.sha256(encode_packet(packet)).hexdigest()
         stored = self.connection.execute('''
             SELECT packet_id, digest FROM custody_packets WHERE packet_id = ? OR sequence = ?
         ''', (packet.packet_id, packet.sequence)).fetchall()
         if stored:
-            if stored != [(packet.packet_id, digest)]:
-                raise PacketIdentityConflict(packet.packet_id)
+            if complete:
+                if stored != [(packet.packet_id, digest)]:
+                    raise PacketIdentityConflict(packet.packet_id)
+            else:
+                # A post-compaction reply only carries the members the device
+                # still retains; every delivered member must match the index.
+                indexed = {row[0]: row[1:] for row in self.connection.execute('''
+                    SELECT position, batch, line, digest FROM custody_members
+                    WHERE packet_id = ?
+                ''', (packet.packet_id,)).fetchall()}
+                if not indexed or not stored or stored[0][0] != packet.packet_id:
+                    raise PacketIdentityConflict(packet.packet_id)
+                for row in packet.rows:
+                    slot = indexed.get(row.origin.position)
+                    if slot is None or slot != (row.batch, hex(row.position), member_digest(row)):
+                        raise PacketIdentityConflict(packet.packet_id)
+        elif not complete:
+            raise PacketIdentityConflict(packet.packet_id)
         else:
             self.connection.execute('''
                 INSERT INTO custody_packets (packet_id, sequence, digest, state)

@@ -1,7 +1,9 @@
 {
   "version": 1,
   "kind": "cli",
-  "setup": [],
+  "setup": [
+    ["python3", "-B", "compaction_fixture.py", "check-v1"]
+  ],
   "verify": ["python3", "-B", "check_project.py"],
-  "demo": ["python3", "-B", "-m", "intake.station", "demo", "samples"]
+  "demo": ["python3", "-B", "compaction_fixture.py", "demo"]
 }

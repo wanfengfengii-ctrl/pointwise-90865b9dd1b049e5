@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from intake.compaction import request_compaction
 from intake.custody import CustodyStore
 from intake.dispatch import IngestResult, IntakeInterrupted, ingest
 from intake.read import RecorderPort
@@ -40,6 +41,9 @@ class Station:
     def ingest(self, port: RecorderPort | None, packet_id: str, *,
                before_member: Callable[[PacketRow], None] | None = None) -> IngestResult:
         return ingest(self.connection, port, packet_id, before_member=before_member)
+
+    def compact(self, port: RecorderPort, operation_id: str, left_id: str, right_id: str) -> str:
+        return request_compaction(self.connection, port, operation_id, left_id, right_id)
 
     def close_batch(self, batch: str, positions: Sequence[int]) -> Manifest:
         return close_batch(self.catalog, batch, positions)

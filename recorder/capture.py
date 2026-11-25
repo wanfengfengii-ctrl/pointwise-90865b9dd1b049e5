@@ -5,6 +5,7 @@ from pathlib import Path
 
 from recorder.ack import AckStatus, acknowledge_packet, query_ack_status
 from recorder.buffer import read_packet, retain_packet
+from recorder.compact import compact_packets
 from recorder.device_store import DeviceStore
 from recorder.packet import Origin, Packet, PacketRow, validate_packet_id, validate_row
 from runs.catalog import RunCatalog
@@ -28,6 +29,8 @@ class Recorder:
             rows.append(row)
         if not rows:
             raise ValueError('an original packet must have at least one reading')
+        if self.store.compaction_enabled() and len(rows) > 2:
+            raise ValueError('a compaction slot holds at most two original readings')
         return retain_packet(self.store, packet_id, tuple(rows))
 
     def read_packet(self, packet_id: str) -> bytes:
@@ -39,11 +42,16 @@ class Recorder:
     def confirmation_status(self, packet_id: str) -> AckStatus:
         return query_ack_status(self.store, packet_id)
 
+    def compact_packets(self, operation_id: str, left_id: str, right_id: str,
+                        evidence: Iterable[tuple[str, int, str]]) -> str:
+        return compact_packets(self.store, operation_id, left_id, right_id, tuple(evidence))
+
 
 @contextmanager
 def open_recorder(path: str | Path, catalog: RunCatalog, *, capacity: int | None = None,
+                  compaction: bool | None = None,
                   loss_after_reclaim: Iterable[str] = ()) -> Iterator[Recorder]:
     with closing(sqlite3.connect(path, isolation_level=None)) as connection:
-        store = DeviceStore(connection, capacity)
+        store = DeviceStore(connection, capacity, compaction=compaction)
         store.initialize()
         yield Recorder(store, catalog, loss_after_reclaim)

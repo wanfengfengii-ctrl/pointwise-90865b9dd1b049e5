@@ -77,6 +77,23 @@ def encode_packet(packet: Packet) -> bytes:
                        'rows': [_member_fields(row) for row in packet.rows]})
 
 
+def encode_compacted_packet(packet_id: str, sequence: int, rows: tuple[PacketRow, ...]) -> bytes:
+    """Encode the readings that still occupy a shared slot after compaction."""
+    validate_packet_id(packet_id)
+    if type(sequence) is not int or sequence < 1 or not rows:
+        raise ValueError('compacted packet requires a positive sequence and at least one row')
+    positions = []
+    for row in rows:
+        validate_row(row)
+        if row.origin.packet_id != packet_id:
+            raise ValueError('compacted member does not originate from its own packet')
+        positions.append(row.origin.position)
+    if len(set(positions)) != len(positions):
+        raise ValueError('compacted packet contains duplicate physical positions')
+    return _serialize({'version': 2, 'packet_id': packet_id, 'sequence': sequence,
+                       'rows': [_member_fields(row) for row in rows]})
+
+
 def _decode_member(fields: list) -> PacketRow:
     if not isinstance(fields, list) or len(fields) != 6:
         raise ValueError('invalid packet member fields')
@@ -97,3 +114,25 @@ def decode_packet(payload: bytes) -> Packet:
                     tuple(_decode_member(fields) for fields in document['rows']))
     encode_packet(packet)
     return packet
+
+
+def decode_delivered_packet(payload: bytes) -> tuple[Packet, bool]:
+    """Decode either a complete v1 reply or a post-compaction v2 subset.
+
+    Returns the packet and ``complete``; ``complete`` is ``False`` when the
+    payload only carries the members still retained after a compaction.
+    """
+    document = json.loads(payload)
+    if not isinstance(document, dict) or set(document) != {'version', 'packet_id', 'sequence', 'rows'}:
+        raise ValueError('invalid packet document')
+    if not isinstance(document['rows'], list) or not document['rows']:
+        raise ValueError('packet rows must be a non-empty list')
+    version = document['version']
+    if version == 1:
+        return decode_packet(payload), True
+    if version != 2:
+        raise ValueError('unsupported packet version')
+    packet = Packet(document['packet_id'], document['sequence'],
+                    tuple(_decode_member(fields) for fields in document['rows']))
+    encode_compacted_packet(packet.packet_id, packet.sequence, packet.rows)
+    return packet, False

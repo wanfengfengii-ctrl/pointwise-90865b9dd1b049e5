@@ -27,14 +27,17 @@ class IntakeInterrupted(RuntimeError):
 
 
 def dispatch_members(custody: CustodyStore, catalog: RunCatalog, rows: RowStore, packet: Packet,
-                     before_member: Callable[[PacketRow], None] | None = None) -> tuple[int, ...]:
+                     before_member: Callable[[PacketRow], None] | None = None, *,
+                     complete: bool = True) -> tuple[int, ...]:
     for member in packet.rows:
         validate_identifier(member.batch, 'batch')
         validate_recording_channel(catalog.require(member.batch).channel, member.channel)
+        if member.origin.packet_id != packet.packet_id:
+            raise ValueError('a delivered member is bound to a different original packet')
     connection = custody.connection
     with connection:
         connection.execute('BEGIN IMMEDIATE')
-        progress = custody.open_packet(packet)
+        progress = custody.open_packet(packet, complete=complete)
     secured = {slot.position for slot in progress.members if slot.secured}
     conflicts = []
     for member in packet.rows:
@@ -97,7 +100,7 @@ def ingest(connection: sqlite3.Connection, port: RecorderPort | None, packet_id:
     if port is None:
         return IngestResult(packet_id, 'awaiting_source')
     try:
-        packet = fetch_packet(port, packet_id)
+        packet, complete = fetch_packet(port, packet_id)
     except PacketUnavailable:
         # A concurrent intake may have committed the safe handoff since the first read.
         plan = plan_resume(custody, packet_id)
@@ -106,7 +109,8 @@ def ingest(connection: sqlite3.Connection, port: RecorderPort | None, packet_id:
         return _resume_ack(port, custody, rows, packet_id, plan.action)
     except ConnectionError:
         return IngestResult(packet_id, 'awaiting_source')
-    conflicts = dispatch_members(custody, RunCatalog(connection), rows, packet, before_member)
+    conflicts = dispatch_members(custody, RunCatalog(connection), rows, packet, before_member,
+                                 complete=complete)
     if conflicts:
         return IngestResult(packet_id, 'conflict', conflicts)
     return finish_packet(port, custody, rows, packet_id)
